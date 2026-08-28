@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: vsg-retail-dashboard
+    runtime: node
+    plan: starter          # a disk requires a paid instance
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    disk:
+      name: data
+      mountPath: /opt/render/project/src/storage
+      sizeGB: 1
