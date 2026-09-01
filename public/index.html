@@ -97,6 +97,11 @@ tbody tr:hover td:not(.cell){background:var(--surface-2)}
 .c-na .sub{opacity:.75; font-size:11.5px}
 .new-tag{display:inline-block; font-size:10px; font-weight:900; letter-spacing:.08em; background:var(--yellow); color:#121212; padding:1px 6px; margin-left:9px; vertical-align:1px}
 
+.caveat{background:var(--yellow-wash); border-left:5px solid var(--yellow); padding:14px 17px; margin-bottom:16px}
+.caveat-lab{display:block; font-size:10.5px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-2); margin-bottom:7px}
+.caveat p{margin:0 0 6px; font-size:13.5px; line-height:1.6}
+.caveat p:last-child{margin-bottom:0}
+.caveat b{font-weight:900}
 .legend{display:flex; gap:20px; flex-wrap:wrap; align-items:center; padding:13px 16px; border-top:1px solid var(--border); background:var(--surface-2); font-size:12.5px; color:var(--ink-2)}
 .legend .k{display:inline-flex; align-items:center; gap:8px}
 .sw{width:13px; height:13px; border:1px solid var(--border-strong); display:inline-block}
@@ -192,6 +197,7 @@ details.ed[open] summary::before{transform:rotate(90deg)}
       <h2>$PSPW vs. Ideal Thresholds</h2>
       <p>Sell-through dollars &divide; doors recorded in the report.</p>
     </div>
+    <div data-mount="caveats"></div>
     <div class="panel">
       <div class="tbl-scroll" data-mount="pspwTable"></div>
       <div class="legend">
@@ -449,6 +455,53 @@ function cellHtml(v, thr){
 function shortHtml(have, n){
   return '<td class="cell c-na" title="Only ' + have + ' week' + (have===1?"":"s") +
     ' on shelf — not enough for a ' + n + '-week average">—<span class="sub"> (wk ' + have + ' of ' + n + ')</span></td>';
+}
+
+var QUIET_WEEKS = 4;        /* a retailer silent this long is reported, not assumed dead */
+var QUIET_MIN_YTD = 500;    /* ignore retailers too small for a gap to mean anything */
+
+function quietRetailers(){
+  var yr = DATA.maxYear, wk = DATA.maxWeek, last = {}, ytd = {};
+  DATA.rows.forEach(function(r){
+    if(r[1] !== yr || r[4] <= 0) return;
+    if(!last[r[0]] || r[2] > last[r[0]]) last[r[0]] = r[2];
+    ytd[r[0]] = (ytd[r[0]] || 0) + r[4];
+  });
+  return Object.keys(last).filter(function(ret){
+    return (wk - last[ret]) >= QUIET_WEEKS && ytd[ret] >= QUIET_MIN_YTD;
+  }).sort(function(a,b){ return ytd[b] - ytd[a]; })
+    .map(function(ret){ return {retailer:ret, lastWeek:last[ret], ytd:ytd[ret]}; });
+}
+
+function renderCaveats(){
+  var host = mount("caveats");
+  if(!host) return;
+  host.innerHTML = "";
+  var yr = DATA.maxYear, wk = DATA.maxWeek;
+  var quiet = quietRetailers();
+  var bits = [];
+
+  quiet.forEach(function(q){
+    var d = weekDate(yr, q.lastWeek);
+    bits.push("<b>" + esc(q.retailer) + "</b> has reported no sales since week " + q.lastWeek +
+      (d ? " (" + esc(prettyDate(d)) + ")" : "") + " — " + (wk - q.lastWeek) +
+      " weeks. Its figures are missing from every total below, not zero.");
+  });
+
+  if(DATA.caveat && DATA.caveat.text){
+    var t = String(DATA.caveat.text)
+      .split(/\n+/).map(function(l){ return l.trim(); })
+      .filter(function(l){
+        return l && !/^(hello|regards|thanks)\b/i.test(l) &&
+               !/contact your Brand Manager/i.test(l) &&
+               !/^Attached is your weekly/i.test(l);
+      });
+    if(t.length) bits.push("<b>From PSi's report email:</b> " + esc(t.join(" ")));
+  }
+
+  if(!bits.length) return;
+  host.innerHTML = '<div class="caveat"><span class="caveat-lab">Read with this in mind</span>' +
+    bits.map(function(b){ return "<p>" + b + "</p>"; }).join("") + "</div>";
 }
 
 function renderPspw(){
@@ -1151,8 +1204,8 @@ function renderUpdatedBadge(){
 /* ============================== wiring ============================== */
 
 function renderAll(){
-  renderKpis(); renderPspw(); renderThresholdEditor(); renderMonth(); renderPair();
-  renderFootnote(); renderPublish(); renderUpdatedBadge();
+  renderKpis(); renderCaveats(); renderPspw(); renderThresholdEditor();
+  renderMonth(); renderPair(); renderFootnote(); renderPublish(); renderUpdatedBadge();
 }
 function initDropzone(){
   var dz = $("#drop"), input = $("#fileInput");

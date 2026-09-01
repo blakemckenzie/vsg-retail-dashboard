@@ -13,14 +13,19 @@
  * On first boot the disk is empty, so the repo's data.json is copied onto it as
  * a starting point. After that the disk is the source of truth.
  *
- * There is no password by design — this is an internal dashboard on an
- * unguessable URL. If that changes, set PUBLISH_PASSWORD and it starts being
- * required, no code change.
+ * There is no password on the browser publish by design — this is an internal
+ * dashboard on an unguessable URL. If that changes, set PUBLISH_PASSWORD.
+ *
+ * POST /api/ingest is the automated path: a Google Apps Script watches Gmail for
+ * PSi's "Weekly Dashboard" mail, and posts the workbook here every week without
+ * anyone touching the page. It needs INGEST_SECRET set, and it carries the email
+ * body across so the report's own caveats show on the dashboard.
  */
 
 const express = require("express");
 const path = require("path");
 const fs = require("fs/promises");
+const { parseWeekly, merge, guard } = require("./lib/parse");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,9 +34,20 @@ const DATA_DIR = process.env.DATA_DIR || "/opt/render/project/src/storage";
 const LIVE_FILE = path.join(DATA_DIR, "data.json");
 const SEED_FILE = path.join(__dirname, "data.json");
 const PASSWORD = process.env.PUBLISH_PASSWORD || "";
+const INGEST_SECRET = process.env.INGEST_SECRET || "";
 
 app.disable("x-powered-by");
-app.use(express.json({ limit: "12mb" }));
+app.use(express.json({ limit: "24mb" }));
+
+/* compare without leaking length through timing */
+function secretOk(given, expected) {
+  const a = String(given || ""), b = String(expected || "");
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    diff |= a.charCodeAt(i % (a.length || 1)) ^ b.charCodeAt(i % (b.length || 1));
+  }
+  return diff === 0;
+}
 
 /* ------------------------------- storage -------------------------------- */
 
@@ -119,13 +135,8 @@ app.post("/api/publish", async (req, res) => {
     });
   }
 
-  if (PASSWORD) {
-    const given = String((req.body && req.body.password) || "");
-    let diff = given.length ^ PASSWORD.length;
-    for (let i = 0; i < Math.max(given.length, PASSWORD.length); i++) {
-      diff |= given.charCodeAt(i % (given.length || 1)) ^ PASSWORD.charCodeAt(i % (PASSWORD.length || 1));
-    }
-    if (diff !== 0) return res.status(401).json({ error: "Wrong password." });
+  if (PASSWORD && !secretOk(req.body && req.body.password, PASSWORD)) {
+    return res.status(401).json({ error: "Wrong password." });
   }
 
   const data = req.body && req.body.data;
@@ -141,8 +152,69 @@ app.post("/api/publish", async (req, res) => {
   }
 });
 
+/* ---- automated weekly ingest, called by the Apps Script ---- */
+
+app.post("/api/ingest", async (req, res) => {
+  if (!INGEST_SECRET) {
+    return res.status(503).json({ error: "INGEST_SECRET is not set on the server." });
+  }
+  if (!secretOk(req.body && req.body.secret, INGEST_SECRET)) {
+    return res.status(401).json({ error: "Bad secret." });
+  }
+  if (!writable) {
+    return res.status(503).json({ error: "No writable disk — nothing would persist." });
+  }
+
+  const b = req.body || {};
+  if (!b.fileBase64) return res.status(400).json({ error: "No file in the request." });
+
+  let parsed;
+  try {
+    parsed = parseWeekly(Buffer.from(b.fileBase64, "base64"));
+  } catch (e) {
+    return res.status(400).json({ error: "Could not read the workbook: " + e.message });
+  }
+  if (!parsed) {
+    return res.status(400).json({ error: "No WeeklySales tab in that file." });
+  }
+
+  const current = (await readLive()) || (await readSeed()) || {};
+  const next = merge(current, parsed);
+
+  const check = guard(current, next);
+  if (check.skip) {
+    return res.json({ ok: true, skipped: true, reason: check.reason,
+                      maxYear: next.maxYear, maxWeek: next.maxWeek });
+  }
+  if (check.block) {
+    return res.status(409).json({ error: check.reason });
+  }
+
+  /* The email body carries PSi's own caveats — which retailer is missing this
+     week, and so on. Keeping it with the data is the whole point of ingesting
+     the mail rather than just the attachment. */
+  if (b.emailBody) {
+    next.caveat = {
+      text: String(b.emailBody).slice(0, 4000),
+      filename: b.filename ? String(b.filename).slice(0, 200) : null,
+      receivedAt: b.receivedAt || null,
+    };
+  }
+  next.publishedAt = new Date().toISOString();
+  next.publishedBy = "email";
+
+  try {
+    await writeLive(next);
+    console.log(`Ingested ${b.filename || "workbook"} — now at ${next.maxYear} W${next.maxWeek}`);
+    res.json({ ok: true, maxYear: next.maxYear, maxWeek: next.maxWeek,
+               rows: next.rows.length, updatedAt: next.publishedAt });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/healthz", (_req, res) =>
-  res.json({ ok: true, canPublish: writable, dataDir: DATA_DIR })
+  res.json({ ok: true, canPublish: writable, canIngest: Boolean(INGEST_SECRET) && writable, dataDir: DATA_DIR })
 );
 
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"], maxAge: "5m" }));
@@ -152,7 +224,8 @@ checkDisk().then(() => {
   app.listen(PORT, () => {
     console.log(
       `VSG retail dashboard on :${PORT} — ` +
-        (writable ? `publishing to the disk at ${DATA_DIR}` : "READ ONLY, no writable disk")
+        (writable ? `publishing to the disk at ${DATA_DIR}` : "READ ONLY, no writable disk") +
+        (INGEST_SECRET ? " — email ingest enabled" : " — email ingest off (set INGEST_SECRET)")
     );
   });
 });

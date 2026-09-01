@@ -6,6 +6,9 @@ services:
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /healthz
+    envVars:
+      - key: INGEST_SECRET
+        generateValue: true
     disk:
       name: data
       mountPath: /opt/render/project/src/storage

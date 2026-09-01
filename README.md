@@ -1,15 +1,17 @@
 # Very Special Games — Retail Sales Dashboard
 
-Render Web Service with a persistent disk. Drop the weekly workbook on the page,
-hit Publish, and everyone on the URL sees it. No git, no redeploy.
+Render Web Service with a persistent disk. PSi's weekly report lands on the
+dashboard by itself; the manual drop-and-publish stays as a fallback.
 
 ```
-server.js          serves the page, handles the weekly publish
-public/index.html  the whole dashboard — markup, styles, charts, xlsx parsing
-data.json          starting data, copied onto the disk on first boot
+server.js            serves the page, handles publishing and email ingest
+lib/parse.js         reads the PSi workbook (server side)
+public/index.html    the whole dashboard — markup, styles, charts, xlsx parsing
+data.json            starting data, copied onto the disk on first boot
+apps-script/Code.gs  the Gmail watcher — paste into script.google.com
 ```
 
-## Deploy (once)
+## 1. Deploy
 
 Push to GitHub, then Render → **New → Web Service** → pick the repo.
 
@@ -29,27 +31,59 @@ Then **Settings → Disks → Add Disk**:
 | Mount Path | `/opt/render/project/src/storage` |
 | Size | 1 GB |
 
-No environment variables. The mount path above is the default the server looks
-for; if you mount somewhere else, set `DATA_DIR` to match.
+## 2. Turn on email ingest
 
-Confirm it worked at `/healthz` — you want `"canPublish": true`.
+**Settings → Environment** → add one variable:
 
-## Every week
+| Key | Value |
+| --- | --- |
+| `INGEST_SECRET` | any long random string — invent one, it just has to match the script |
 
-Open the URL, drop `Very Special Games<date>.xlsx` on section 05, check the
-numbers, hit **Publish to the team**. Done.
+Check `/healthz`. You want `"canPublish": true` and `"canIngest": true`.
 
-Dropping a `VSG COGS` workbook refreshes gross profit per SKU the same way.
-Ideal thresholds (section 02) publish through the same button.
+## 3. Point the Gmail watcher at it
+
+Open `apps-script/Code.gs`, then:
+
+1. script.google.com → **New project**, paste the file in.
+2. Set `DASHBOARD_URL` to your Render URL, and `INGEST_SECRET` to the same string.
+3. Run **checkForReport** once and accept the Google authorisation prompt.
+4. Triggers (clock icon) → **Add Trigger** → `checkForReport`, Time-driven,
+   Day timer, 6am–7am.
+
+That's it. PSi sends Wednesday mornings; the script picks it up on the next run.
+
+## What happens each week
+
+The script finds the newest "Weekly Dashboard" email, posts the workbook and the
+email body to `/api/ingest`, and the dashboard updates. The email body matters:
+PSi puts data-quality notes in it ("no Indigo sales from week ending 5/23") and
+those show as a caveat on the dashboard instead of being lost.
+
+**Nothing is overwritten carelessly.** The server refuses a file that is older
+than what's live, or that has lost more than 10% of its rows. If the week is
+already published it skips quietly, so a daily trigger is harmless. Any failure
+emails you and leaves the previous week untouched — and retries next run.
+
+The page also flags any retailer that has stopped reporting for 4+ weeks,
+whether or not PSi mentions it.
+
+## Manual fallback
+
+Drop a workbook on section 05 and hit **Publish to the team** — same as before.
+Dropping a `VSG COGS` workbook refreshes gross profit per SKU. Ideal thresholds
+(section 02) publish through the same button.
+
+`forceResend()` in the Apps Script re-pushes the newest report if you need it.
 
 ## Notes
 
-- **No password by design.** Anyone with the URL can publish. Set
-  `PUBLISH_PASSWORD` in Render and the page starts asking for one — no code change.
-- **The disk survives deploys and restarts.** It's snapshotted daily by Render.
-- **If the disk is missing**, the page still serves the last data it has and the
-  Publish button refuses with an explanation rather than silently losing the file.
+- **No password on the browser publish** by design. Set `PUBLISH_PASSWORD` in
+  Render and the page starts asking for one, no code change.
+- **The disk survives deploys and restarts**, and Render snapshots it daily.
+- `lib/parse.js` and the parser inside `public/index.html` must agree — if you
+  change the row shape in one, change it in the other.
 - A disk-backed service runs one instance and has a few seconds of downtime on
-  deploy. Irrelevant here, but that's why.
+  deploy.
 - Two external requests: Google Fonts and SheetJS from cdnjs. The page renders
-  without them; the file drop needs SheetJS.
+  without them; the manual file drop needs SheetJS.
