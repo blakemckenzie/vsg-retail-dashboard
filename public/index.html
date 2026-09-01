@@ -195,9 +195,9 @@ details.ed[open] summary::before{transform:rotate(90deg)}
     <div class="panel">
       <div class="tbl-scroll" data-mount="pspwTable"></div>
       <div class="legend">
-        <span class="k"><span class="sw" style="background:var(--good-fill); border-color:var(--good)"></span> <span>&#9650;</span> At or above threshold</span>
-        <span class="k"><span class="sw" style="background:var(--warn-fill); border-color:var(--warn)"></span> <span>&#9679;</span> Within 10% of threshold</span>
-        <span class="k"><span class="sw" style="background:var(--crit-fill); border-color:var(--crit)"></span> <span>&#9660;</span> Below 90% of threshold</span>
+        <span class="k"><span class="sw" style="background:var(--good-fill); border-color:var(--good)"></span> <span>&#9650;</span> 95% of ideal or better</span>
+        <span class="k"><span class="sw" style="background:var(--warn-fill); border-color:var(--warn)"></span> <span>&#9679;</span> 50&ndash;95% of ideal</span>
+        <span class="k"><span class="sw" style="background:var(--crit-fill); border-color:var(--crit)"></span> <span>&#9660;</span> Below 50% of ideal</span>
         <span class="k" style="margin-left:auto"><button class="ghost" data-act="exportPspw">Export CSV</button></span>
       </div>
       <details class="ed">
@@ -271,7 +271,8 @@ var RET_MAP = {TARGET:"Target", WALMART:"Walmart", BN:"B&N", MEIJER:"Meijer", AW
   INDIGO:"Indigo", "FRED MEYER":"Fred Meyer", KOHLS:"Kohl's", GGS:"GGS", BGR:"BGR"};
 var PSPW_RETAILERS = ["Target","Walmart","B&N"];
 var MIN_DOORS_IN_TABLE = 25;
-var WARN_BAND = 0.90;              /* >=90% of threshold is amber, >=100% green */
+var GOOD_BAND = 0.95;              /* >=95% of the ideal threshold reads green */
+var WARN_BAND = 0.50;              /* 50-95% amber, below 50% red */
 var PAIR_MIN_VOLUME = 1000;        /* keeps the dropdown to lines that matter */
 var DATA_FILE = "data.json";           /* fallback when there's no API in front of the page */
 var SS_PW = "vsg.pw";                  /* publish password, this browser tab only */
@@ -438,9 +439,10 @@ function pspwGroups(){
 function cellHtml(v, thr){
   if(v == null) return '<td class="cell c-na">—</td>';
   var r = v/thr;
-  var cls = r >= 1 ? "c-good" : (r >= WARN_BAND ? "c-warn" : "c-crit");
-  var g   = r >= 1 ? "▲"      : (r >= WARN_BAND ? "●"      : "▼");
-  var lab = r >= 1 ? "at or above threshold" : (r >= WARN_BAND ? "within 10% of threshold" : "below 90% of threshold");
+  var cls = r >= GOOD_BAND ? "c-good" : (r >= WARN_BAND ? "c-warn" : "c-crit");
+  var g   = r >= GOOD_BAND ? "▲"       : (r >= WARN_BAND ? "●"      : "▼");
+  var lab = r >= GOOD_BAND ? "95% of the ideal threshold or better"
+          : (r >= WARN_BAND ? "50–95% of the ideal threshold" : "below 50% of the ideal threshold");
   return '<td class="cell '+cls+'" title="'+pct(r,0)+' of the $'+thr+' threshold — '+lab+'">' +
     '<span class="glyph" aria-hidden="true">'+g+'</span>$'+v.toFixed(2)+'</td>';
 }
