@@ -26,6 +26,8 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs/promises");
 const { parseWeekly, merge, guard } = require("./lib/parse");
+const { build: buildBrief } = require("./lib/brief");
+const { postWeeklyTask } = require("./lib/asana");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,6 +37,12 @@ const LIVE_FILE = path.join(DATA_DIR, "data.json");
 const SEED_FILE = path.join(__dirname, "data.json");
 const PASSWORD = process.env.PUBLISH_PASSWORD || "";
 const INGEST_SECRET = process.env.INGEST_SECRET || "";
+const ASANA_TOKEN = process.env.ASANA_TOKEN || "";
+const ASANA_PROJECT = process.env.ASANA_PROJECT || "";
+const ASANA_NOTIFY = (process.env.ASANA_NOTIFY || "").split(",").map((s) => s.trim()).filter(Boolean);
+const ASANA_SECTION = process.env.ASANA_SECTION || "";
+const PUBLIC_URL = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || "";
+const ASANA_ON = Boolean(ASANA_TOKEN && ASANA_PROJECT);
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "24mb" }));
@@ -118,8 +126,11 @@ app.get("/api/data", async (_req, res) => {
   const data = (await readLive()) || (await readSeed());
   if (!data) return res.status(404).json({ error: "No report available yet." });
   res.set("Cache-Control", "no-store");
+  let brief = null;
+  try { brief = buildBrief(data); } catch (e) { console.warn("brief failed: " + e.message); }
   res.json({
     data,
+    brief,
     updatedAt: data.publishedAt || null,
     canPublish: writable,
     needsPassword: Boolean(PASSWORD),
@@ -144,6 +155,7 @@ app.post("/api/publish", async (req, res) => {
   if (problem) return res.status(400).json({ error: problem });
 
   data.publishedAt = new Date().toISOString();
+  try { data.brief = buildBrief(data); } catch (e) { console.warn("brief failed: " + e.message); }
   try {
     await writeLive(data);
     res.json({ ok: true, updatedAt: data.publishedAt });
@@ -202,19 +214,78 @@ app.post("/api/ingest", async (req, res) => {
   }
   next.publishedAt = new Date().toISOString();
   next.publishedBy = "email";
+  try { next.brief = buildBrief(next); } catch (e) { console.warn("brief failed: " + e.message); }
 
   try {
     await writeLive(next);
     console.log(`Ingested ${b.filename || "workbook"} — now at ${next.maxYear} W${next.maxWeek}`);
+
+    // Tell the team. A failure here must not fail the ingest: the numbers are
+    // already saved, and a missing Asana task is a nuisance, not a data loss.
+    let asana = null;
+    if (ASANA_ON) {
+      try {
+        asana = await postWeeklyTask({
+          token: ASANA_TOKEN, projectGid: ASANA_PROJECT, notifyEmails: ASANA_NOTIFY,
+          section: ASANA_SECTION, brief: buildBrief(next), dashboardUrl: PUBLIC_URL,
+        });
+        console.log(`Asana task created: ${asana.url} (tagged ${asana.tagged})`);
+      } catch (e) {
+        asana = { error: e.message };
+        console.warn("Asana post failed: " + e.message);
+      }
+    }
+
     res.json({ ok: true, maxYear: next.maxYear, maxWeek: next.maxWeek,
-               rows: next.rows.length, updatedAt: next.publishedAt });
+               rows: next.rows.length, updatedAt: next.publishedAt, asana });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// Post the current week to Asana on demand, for checking the wiring without
+// waiting until Wednesday. Same secret as ingest.
+app.post("/api/asana-test", async (req, res) => {
+  if (!INGEST_SECRET || !secretOk(req.body && req.body.secret, INGEST_SECRET)) {
+    return res.status(401).json({ error: "Bad secret." });
+  }
+  if (!ASANA_ON) {
+    return res.status(503).json({ error: "ASANA_TOKEN and ASANA_PROJECT are not both set." });
+  }
+  const data = (await readLive()) || (await readSeed());
+  if (!data) return res.status(404).json({ error: "No data to summarise yet." });
+  try {
+    const out = await postWeeklyTask({
+      token: ASANA_TOKEN, projectGid: ASANA_PROJECT, notifyEmails: ASANA_NOTIFY,
+      section: ASANA_SECTION, brief: buildBrief(data), dashboardUrl: PUBLIC_URL,
+    });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// What the brief says right now, as JSON. Handy for eyeballing before posting.
+app.post("/api/brief", (req, res) => {
+  const data = req.body && req.body.data;
+  const problem = validate(data);
+  if (problem) return res.status(400).json({ error: problem });
+  try { res.json(buildBrief(data)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/brief", async (_req, res) => {
+  const data = (await readLive()) || (await readSeed());
+  if (!data) return res.status(404).json({ error: "No data yet." });
+  try { res.json(buildBrief(data)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get("/healthz", (_req, res) =>
-  res.json({ ok: true, canPublish: writable, canIngest: Boolean(INGEST_SECRET) && writable, dataDir: DATA_DIR })
+  res.json({ ok: true, canPublish: writable, canIngest: Boolean(INGEST_SECRET) && writable,
+             asana: ASANA_ON ? { project: ASANA_PROJECT, notify: ASANA_NOTIFY.length,
+                                section: ASANA_SECTION || null } : false,
+             dataDir: DATA_DIR })
 );
 
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"], maxAge: "5m" }));
@@ -225,7 +296,8 @@ checkDisk().then(() => {
     console.log(
       `VSG retail dashboard on :${PORT} — ` +
         (writable ? `publishing to the disk at ${DATA_DIR}` : "READ ONLY, no writable disk") +
-        (INGEST_SECRET ? " — email ingest enabled" : " — email ingest off (set INGEST_SECRET)")
+        (INGEST_SECRET ? " — email ingest on" : " — email ingest off (set INGEST_SECRET)") +
+        (ASANA_ON ? " — Asana on" : "")
     );
   });
 });
