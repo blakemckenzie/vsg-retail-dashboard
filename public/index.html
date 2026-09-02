@@ -63,6 +63,22 @@ section{margin-top:44px}
 .sec-head p{margin:0; color:var(--muted); font-size:13px}
 .panel{background:var(--surface); border:1px solid var(--border); overflow:hidden}
 
+/* ---- the weekly brief ---- */
+.brief{background:var(--surface); border:1px solid var(--border); border-top:6px solid var(--aqua);
+  padding:22px 26px 20px; margin-top:34px}
+.brief-lab{display:block; font-size:10.5px; font-weight:900; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--muted); margin-bottom:10px}
+.brief-head{font-family:"Arvo", Georgia, serif; font-weight:700; font-size:18px; line-height:1.5;
+  margin:0 0 4px; letter-spacing:-.01em}
+.brief-head b{font-weight:700; box-shadow:inset 0 -0.42em 0 var(--aqua)}
+.brief-list{margin:16px 0 0; padding:0; list-style:none; display:grid; gap:9px}
+.brief-list li{position:relative; padding-left:26px; font-size:14.5px; line-height:1.55}
+.brief-list li::before{position:absolute; left:0; top:1px; font-size:12px; font-weight:900}
+.brief-list li.b-up::before{content:"\25B2"; color:var(--good)}
+.brief-list li.b-down::before{content:"\25BC"; color:var(--crit)}
+.brief-list b{font-weight:900}
+@media(max-width:580px){ .brief{padding:18px} .brief-head{font-size:16px} }
+
 /* ---- KPI ---- */
 .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:16px}
 @media(max-width:1040px){.kpis{grid-template-columns:repeat(2,1fr)}}
@@ -181,6 +197,8 @@ details.ed[open] summary::before{transform:rotate(90deg)}
 </header>
 
 <div class="wrap">
+
+  <div data-mount="brief"></div>
 
   <section id="sec-kpi">
     <div class="sec-head">
@@ -560,6 +578,188 @@ function renderThresholdEditor(){
 }
 
 /* ============================== KPIs ============================== */
+
+/* ============================== the weekly brief ==============================
+   One line on the week, then the three things most worth knowing — good or bad.
+   Candidates are scored by dollar impact regardless of direction, so a bad week
+   surfaces what went wrong rather than hunting for something cheerful to say. */
+
+var BRIEF_MIN_PAIR = 750;    /* ignore retailer x title swings smaller than this */
+
+function briefCandidates(){
+  var yr = DATA.maxYear, wk = DATA.maxWeek, ly = yr - 1, out = [];
+
+  /* A retailer that has stopped reporting shows as -100% everywhere. That is a
+     data gap, not a sales collapse, and the caveat block already explains it —
+     so keep it out of the brief rather than blaming a title for it. */
+  var silent = {};
+  quietRetailers().forEach(function(q){ silent[q.retailer] = 1; });
+
+  /* --- swings by title, gathered across retailers ---
+     The same title moving the same way at two retailers is one story, not two. */
+  var bySku = {};
+  Object.keys(IDX.pairs).forEach(function(k){
+    var p = IDX.pairs[k];
+    var a = cell(p.retailer, p.sku, yr, wk).s;
+    var b = cell(p.retailer, p.sku, ly, wk).s;
+    if(silent[p.retailer]) return;
+    if(a + b < BRIEF_MIN_PAIR || Math.abs(a - b) < BRIEF_MIN_PAIR / 2) return;
+    /* group by the display title: the same game carries a different SKU code
+       at each retailer (House Party is 32219A at Target, 3221RF at Walmart). */
+    var t = titleOf(p.sku);
+    var g = bySku[t] || (bySku[t] = {title:t, at:[]});
+    g.at.push({retailer:p.retailer, now:a, then:b, d:a - b});
+  });
+
+  Object.keys(bySku).forEach(function(title){
+    var g = bySku[title];
+    var up = g.at.filter(function(x){ return x.d >= 0; });
+    var down = g.at.filter(function(x){ return x.d < 0; });
+    [up, down].forEach(function(side){
+      if(!side.length) return;
+      side.sort(function(a, b){ return Math.abs(b.d) - Math.abs(a.d); });
+      var swing = side.reduce(function(t, x){ return t + x.d; }, 0);
+      var now = side.reduce(function(t, x){ return t + x.now; }, 0);
+      var then = side.reduce(function(t, x){ return t + x.then; }, 0);
+      var rising = swing >= 0, txt;
+
+      if(side.length >= 2){
+        var where = side.slice(0, 3).map(function(x){
+          return esc(x.retailer) + (x.then > 0 ? " (" + signed(x.now / x.then - 1, 0) + ")" : "");
+        });
+        txt = "<b>" + esc(title) + "</b> is " + (rising ? "up" : "down") + " at " +
+              (where.length === 2 ? where.join(" and ") :
+                where.slice(0, -1).join(", ") + " and " + where[where.length - 1]) +
+              " — " + money(Math.abs(swing)) + (rising ? " more" : " less") + " than the same week last year";
+      } else {
+        var x = side[0];
+        txt = "<b>" + esc(x.retailer + " " + title) + "</b> did " + money(x.now) +
+              (x.then > 0 ? ", " + (rising ? "up " : "down ") + pct(Math.abs(x.now / x.then - 1), 0) +
+                            " on the same week last year"
+                          : ", with no comparable week last year");
+      }
+      out.push({score: Math.abs(swing) * (side.length >= 2 ? 1.25 : 1),
+                group: "title", key: title, retailers: side.map(function(x){ return x.retailer; }),
+                up: rising, text: txt});
+    });
+  });
+
+  /* --- new distribution, gathered into one line --- */
+  var launches = [], seen = {};
+  Object.keys(IDX.pairs).forEach(function(k){
+    var p = IDX.pairs[k], first = IDX.firstWeek[k];
+    if(first == null || first < yr * 100 + wk - 5) return;
+    if(cell(p.retailer, p.sku, yr, wk).s <= 0 || seen[k]) return;
+    seen[k] = 1;
+    launches.push({retailer:p.retailer, sku:p.sku, doors: doorsNow(p.retailer, p.sku, yr, wk)});
+  });
+  if(launches.length){
+    launches.sort(function(a, b){ return b.doors - a.doors; });
+    var doors = launches.reduce(function(t, x){ return t + x.doors; }, 0);
+    var sameRetailer = launches.every(function(x){ return x.retailer === launches[0].retailer; });
+    var list = launches.slice(0, 3).map(function(x){
+      return "<b>" + esc(titleOf(x.sku)) + "</b>" + (x.doors > 0 ? " (" + x.doors.toLocaleString("en-US") + " doors)" : "");
+    });
+    var n = launches.length;
+    var word = ["", "One new listing", "Two new listings", "Three new listings",
+                "Four new listings", "Five new listings"][n] || (n + " new listings");
+    var extra = n > list.length ? ", plus " + (n - list.length) + " smaller" : "";
+    var where = sameRetailer ? " at " + esc(launches[0].retailer)
+                             : " across " + [...new Set(launches.map(function(x){ return x.retailer; }))]
+                                 .slice(0, 3).map(esc).join(", ");
+    out.push({score: 2000 + doors * 1.6, group: "launch", key: "launch", up: true,
+      text: word + where + " — " +
+            (list.length === 1 ? list[0] :
+              list.slice(0, -1).join(", ") + " and " + list[list.length - 1]) + extra +
+            ". Too early to judge, but worth watching."});
+  }
+
+  /* --- anything that changed threshold band since last week --- */
+  pspwGroups().forEach(function(g){
+    g.items.forEach(function(it){
+      var now = pspw(g.retailer, it.sku, yr, wk, 1).value;
+      var pw = backWeeks(yr, wk, 2)[1];
+      var was = pspw(g.retailer, it.sku, pw[0], pw[1], 1).value;
+      if(now == null || was == null) return;
+      var band = function(v){
+        var r = v / g.threshold;
+        return r >= GOOD_BAND ? 2 : (r >= WARN_BAND ? 1 : 0);
+      };
+      var bn = band(now), bw = band(was);
+      if(bn === bw) return;
+      var label = ["below 50% of ideal", "the 50–95% band", "95% of ideal or better"][bn];
+      out.push({score: 2500 + Math.abs(now - was) * 400, group: "band", key: g.retailer + it.sku,
+        retailers: [g.retailer], up: bn > bw,
+        text: "<b>" + esc(g.retailer + " " + titleOf(it.sku)) + "</b> " +
+              (bn > bw ? "moved up into " : "slipped to ") + label +
+              ", at $" + now.toFixed(2) + " per store"});
+    });
+  });
+
+  /* --- a whole retailer moving, only interesting if no title already said so --- */
+  DATA.retailers.forEach(function(ret){
+    var a = 0, b = 0;
+    weekRows(yr, wk).forEach(function(r){ if(r[0] === ret) a += r[4]; });
+    weekRows(ly, wk).forEach(function(r){ if(r[0] === ret) b += r[4]; });
+    if(silent[ret] || a + b < BRIEF_MIN_PAIR * 2 || !(b > 0)) return;
+    var d = a - b;
+    out.push({score: Math.abs(d) * 0.55, group: "retailer", key: ret, retailers: [ret], up: d >= 0,
+      text: "<b>" + esc(ret) + "</b> overall came in at " + money(a) + ", " +
+            (d >= 0 ? "up " : "down ") + pct(Math.abs(a / b - 1), 0) + " year on year"});
+  });
+
+  return out;
+}
+
+function renderBrief(){
+  var host = mount("brief");
+  if(!host) return;
+  var yr = DATA.maxYear, wk = DATA.maxWeek, ly = yr - 1;
+  var c = kpiFor(yr, wk), p = kpiFor(ly, wk);
+
+  var ytd = 0, ytdLy = 0;
+  for(var w = 1; w <= wk; w++){
+    weekRows(yr, w).forEach(function(r){ ytd += r[4]; });
+    weekRows(ly, w).forEach(function(r){ ytdLy += r[4]; });
+  }
+  var wkComp = p.pos > 0 ? c.pos / p.pos - 1 : null;
+  var ytdComp = ytdLy > 0 ? ytd / ytdLy - 1 : null;
+
+  var head = "Week " + wk + " ending " + prettyDate(weekDate(yr, wk)) + " brought in <b>" + money(c.pos) + "</b>";
+  if(wkComp != null) head += ", " + (wkComp >= 0 ? "up" : "down") + " <b>" +
+    pct(Math.abs(wkComp), 1) + "</b> on the same week last year";
+  if(ytdComp != null) head += ". Year to date the business is <b>" + signed(ytdComp, 1) + "</b>";
+  head += ".";
+
+  /* three, and not all telling the same story */
+  var cands = briefCandidates().sort(function(a, b){ return b.score - a.score; });
+  var picked = [], usedKey = {}, usedRet = {}, usedGroup = {};
+  cands.forEach(function(x){
+    if(picked.length >= 3) return;
+    if(usedKey[x.key]) return;                       /* same title twice */
+    if(usedGroup[x.group] >= 2) return;              /* three of a kind */
+    var rets = x.retailers || [];
+    if(rets.length === 1 && usedRet[rets[0]]) return; /* same retailer twice */
+    usedKey[x.key] = 1; usedGroup[x.group] = (usedGroup[x.group] || 0) + 1;
+    if(rets.length === 1) usedRet[rets[0]] = 1;   /* only single-retailer bullets claim one */
+    picked.push(x);
+  });
+  if(picked.length < 3 && c.margin != null && p.margin != null){
+    picked.push({up: c.margin >= p.margin,
+      text: "Margin ran at <b>" + pct(c.margin) + "</b>, " +
+        Math.abs((c.margin - p.margin) * 100).toFixed(1) + " points " +
+        (c.margin >= p.margin ? "above" : "below") + " the same week last year"});
+  }
+
+  host.innerHTML =
+    '<div class="brief">' +
+      '<span class="brief-lab">The week in short</span>' +
+      '<p class="brief-head">' + head + '</p>' +
+      (picked.length ? '<ul class="brief-list">' + picked.map(function(x){
+        return '<li class="' + (x.up ? "b-up" : "b-down") + '">' + x.text + '</li>';
+      }).join("") + '</ul>' : "") +
+    '</div>';
+}
 
 function kpiFor(yr, wk){
   var rows = weekRows(yr, wk), gp = DATA.gp;
@@ -1204,7 +1404,7 @@ function renderUpdatedBadge(){
 /* ============================== wiring ============================== */
 
 function renderAll(){
-  renderKpis(); renderCaveats(); renderPspw(); renderThresholdEditor();
+  renderBrief(); renderKpis(); renderCaveats(); renderPspw(); renderThresholdEditor();
   renderMonth(); renderPair(); renderFootnote(); renderPublish(); renderUpdatedBadge();
 }
 function initDropzone(){
