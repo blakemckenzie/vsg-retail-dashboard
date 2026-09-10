@@ -96,12 +96,49 @@ async function checkDisk() {
     console.warn(`No writable disk at ${DATA_DIR} (${e.code || e.message}).`);
     console.warn("Publishing is disabled. Attach a persistent disk in Render, mounted at that path.");
   }
-  if (writable && !(await readLive())) {
+  const live = await readLive();
+  if (writable && !live) {
     const seed = await readSeed();
     if (seed) {
       await writeLive(seed);
       console.log("Disk was empty — seeded it with the data.json from the repo.");
     }
+  } else if (writable && live) {
+    await backfill(live);
+  }
+}
+
+/* The disk is the source of truth for the numbers, but settings shipped in the
+   repo's data.json would otherwise never reach a disk that already exists. So
+   on boot, fill in only what the live copy is missing — anything already there
+   wins, because that's what someone edited on the page. */
+const CONFIG_KEYS = ["briefFlagship", "briefExclude", "newTitleWeeks", "gpAlias", "monthNotes"];
+const MERGE_KEYS = ["adSpend", "ecomUnits"];
+
+async function backfill(live) {
+  const seed = await readSeed();
+  if (!seed) return;
+  const added = [];
+
+  for (const k of CONFIG_KEYS) {
+    if (live[k] === undefined && seed[k] !== undefined) { live[k] = seed[k]; added.push(k); }
+  }
+  for (const k of MERGE_KEYS) {
+    if (!seed[k]) continue;
+    live[k] = live[k] || {};
+    let n = 0;
+    for (const m of Object.keys(seed[k])) {
+      if (live[k][m] === undefined) { live[k][m] = seed[k][m]; n++; }
+    }
+    if (n) added.push(`${k} (+${n})`);
+  }
+
+  if (!added.length) return;
+  try {
+    await writeLive(live);
+    console.log("Filled in from the repo's data.json: " + added.join(", "));
+  } catch (e) {
+    console.warn("Could not write the backfill: " + e.message);
   }
 }
 
