@@ -3,6 +3,9 @@
 Render Web Service with a persistent disk. PSi's weekly report lands on the
 dashboard by itself; the manual drop-and-publish stays as a fallback.
 
+Two tabs: the weekly dashboard, and a monthly report that rebuilds the format
+of the Google Doc.
+
 ```
 server.js            serves the page, handles publishing, ingest and Asana
 lib/parse.js         reads the PSi workbook (server side)
@@ -82,6 +85,82 @@ Three settings live in the data file, so none of this needs a code change:
 The brief is written by `lib/brief.js` and stored with the data, so the page and
 the Asana task always say the same thing. Dropping a file by hand asks the server
 to summarise the preview, so even that path uses the one implementation.
+
+## The monthly report tab
+
+Pick a month and it rebuilds the whole thing: executive overview, the black
+snapshot bar, sales and profit against last year, the three-year comparison, the
+$PSPW table, monthly sales by retailer, and RNHP at Target and Walmart.
+**Print / copy view** strips the page furniture so it prints straight to PDF or
+pastes into the doc.
+
+It defaults to the most recent month that has actually finished. A month is
+finished once the week after its last one falls in the next month — week 35
+ended August 29 and the following report covers September 5, so August closes
+even while week 35 is still the newest week on the dashboard.
+
+### Generating a month
+
+The picker shows every month; the chips beside it say whether the one you're
+looking at is ready:
+
+| Chip | Means |
+| --- | --- |
+| `5 weeks in (W31–W35)` | every week of the month has reported |
+| `Still running — W36 so far` | the month isn't closed yet |
+| `Ad spend` / `E-com units` | both are entered, so tCPA works |
+| `Gross profit mapped` | no SKU sold that month is missing from COGS |
+
+**Generate <month>** writes the month up: the summary and three takeaways are
+saved rather than drafted live, and the month gets a ✓ in the picker. Publish
+to make it the team's view. The button still works with a chip showing amber —
+it just turns amber too, so you know something's outstanding.
+
+Pressing it again on a month that's already generated asks first, because it
+rewrites the summary and the takeaways from the data. The snapshot and
+per-store notes you typed are kept either way.
+
+### The two numbers you have to type
+
+Everything on the tab comes out of PSi's file except **ad spend** and
+**e-commerce units**, which aren't in it. Both live in the grid at the bottom of
+the tab; tCPA needs both and shows a dash until they're there.
+
+```
+tCPA = that month's ad spend ÷ (retail POS units + e-commerce units)
+```
+
+History for 2025 and 2026 is already loaded from the PSI Sales Analysis sheet.
+Each new month needs two numbers. They publish with the same **Publish to the
+team** button as everything else.
+
+Settings shipped in the repo's `data.json` are filled into the live disk copy on
+boot, but only where the disk doesn't already have them — anything edited on the
+page wins. That's how the ad-spend history reaches a service whose disk already
+exists.
+
+### Where it differs from the doc, on purpose
+
+- **$PSPW uses recorded door counts.** The doc's Target column was built on a
+  fixed door count about 13% lower, which is why its Target numbers run higher.
+  Walmart and B&N match.
+- **Last year is read over the same week numbers**, not last year's calendar
+  months. Comparing calendar Augusts puts five weeks against four. April onward
+  matches the doc exactly; January to March moves, because that's where the two
+  methods diverge.
+- **The $PSPW table is as of the last week *in* the month.** The July doc was
+  built in early August off week 31.
+- **A comp needs a real base.** Under $2,000 last year, or a title that wasn't on
+  shelf every week, reads NEW rather than +54,809%.
+- **Margin is gross profit ÷ POS sell-through**, the way the doc has always shown
+  it. The weekly tab now uses the same definition, so the two agree.
+
+### The executive overview
+
+Drafted from the month's data and yours to edit — click any line. The line
+underneath says where it stands: drafted live, generated, or generated and
+edited since. Whatever's in the fields when you publish is what gets saved, so a
+month you never pressed Generate on still reads sensibly.
 
 ## 4. Optional: post to Asana each week
 
