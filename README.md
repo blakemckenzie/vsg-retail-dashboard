@@ -162,6 +162,44 @@ underneath says where it stands: drafted live, generated, or generated and
 edited since. Whatever's in the fields when you publish is what gets saved, so a
 month you never pressed Generate on still reads sensibly.
 
+## Profit by SKU (section 05)
+
+Pick a week and it lists every SKU that sold, ordered by gross profit: units,
+POS sales, our revenue at 40% of MSRP, gross profit and margin — then the
+per-unit cost stack read off `COGS-DETAILED`: unit cost, royalty, freight,
+tariff, landed cost and gross profit per unit. Totals across the bottom, and a
+line underneath giving the week's tariff bill. **Export CSV** takes the lot.
+
+### One thing the COGS sheet does that the table has to undo
+
+Column L states royalty against MSRP, and column Q (`US TOTAL LANDED`) adds that
+whole figure in. Column S (`GROSS PROFIT`) does not — on a wholesale sale the
+royalty is owed on what we actually charge, so it is `ROY%` of the sales price,
+four tenths of L.
+
+Showing column Q next to column S would therefore not add up on any title that
+carries a royalty — Landfall, Skyscratchers, Perfect Split, Drizzle, Yamma. The
+table rebuilds the stack on the retail basis so the columns explain the gross
+profit sitting beside them:
+
+```
+landed  = unit cost + (ROY% x sales price) + freight + tariff
+profit  = sales price - landed
+```
+
+Any SKU where that still doesn't reconcile gets its landed cost marked in red,
+because that means its COGS row needs a look.
+
+### Keeping it current
+
+Gross profit and the cost stack both come from a `VSG COGS` workbook dropped on
+section 06 — export the Google Sheet and drop it whenever costs change. Nothing
+polls the sheet, so an edit there doesn't reach the dashboard until you do.
+
+A SKU whose COGS row has `PENDING` in the **PSI CODE** column can't be matched,
+so its per-unit columns stay empty. `Skyscratchers: Retail Edition` and
+`Drizzle` are both in that state; filling in their PSI codes completes them.
+
 ## 4. Optional: post to Asana each week
 
 Add three more environment variables in Render:
