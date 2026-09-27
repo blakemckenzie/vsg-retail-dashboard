@@ -200,6 +200,66 @@ A SKU whose COGS row has `PENDING` in the **PSI CODE** column can't be matched,
 so its per-unit columns stay empty. `Skyscratchers: Retail Edition` and
 `Drizzle` are both in that state; filling in their PSI codes completes them.
 
+## The Ad &rarr; Retail tab
+
+Does Meta spend move retail sell-through? The tab is built to answer that
+honestly, which means it is built to talk you out of the obvious answer.
+
+Every readout comes in three parts, because one number is not enough:
+
+| Reading | What it is | What a high number means |
+| --- | --- | --- |
+| **All weeks** | Pearson on levels, whole series | usually just December in both series |
+| **Holidays out** | weeks 45&ndash;52 and week 1 dropped | the two series drift together over months |
+| **Week-on-week** | correlation of *changes*, not levels | a move in spend is followed by a move in retail |
+
+Shading is strength only. A strong first column and a strong third mean opposite
+things, so neither gets a "good" colour.
+
+### The placebo check
+
+Section C correlates each family's spend against **every** family's retail. If
+Abducktion's spend explains Charty Party's retail as well as it explains
+Abducktion's, the number is measuring the calendar, not the campaigns. The note
+underneath compares the diagonal against the off-diagonal and says which it is.
+
+### What the current data says
+
+Ransom Notes at +1 week reads r = 0.89. Drop the holiday weeks and it is 0.45;
+correlate week-on-week changes and it is 0.08. The placebo diagonal averages
+0.67 against 0.66 off it. In week 51 of 2025 the business spent $569k on Meta
+and Ransom Notes did $78.52 per store per week; a normal week is $10k and $4.
+Two paired points that size drag Pearson to 0.9 whatever else is in the series.
+
+$PSPW is the default retail metric for a reason: on units and sell-through
+dollars the non-holiday correlation drops to zero, because distribution changes
+swamp everything else.
+
+### Controls
+
+Family, retail metric ($PSPW / units / sell-through $), lag (same week to +3),
+and spend scope. **Spend defaults to US only** &mdash; a fifth of Meta spend is
+UK and Canada, and that cannot move US retail POS.
+
+### Loading ad spend
+
+Drop a Meta Ads campaign export (`.csv`) on section 06, same as a workbook. It
+needs **Campaign name**, **Day** and **Amount spent (USD)**; **Country** is used
+for the US filter. Each day is matched to the Circana week ending on or after
+it, and campaigns map to a product family by their name prefix (RN, AB, TLH, VB,
+POA, BC, CP&hellip;). Re-exporting a period replaces those weeks rather than
+adding to them.
+
+Campaigns that span families &mdash; `MULTI`, `MOF & BOF` remarketing &mdash;
+are attributed to nobody, and the total held out is shown under section C.
+
+**A week with no export is a hole, not a zero.** July and August 2025 were never
+downloaded; those 8 weeks are excluded from every correlation and hatched on the
+chart, because filling them with zero would invent a quiet period that never
+happened.
+
+**Amazon PPC is not in here.** Everything on this tab is Meta.
+
 ## 4. Optional: post to Asana each week
 
 Add three more environment variables in Render:
