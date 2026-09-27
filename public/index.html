@@ -666,7 +666,7 @@ var IDX = null, WEEKS_IN_YEAR = null;
 
 function reindex(){
   MIDX = null;                       // the monthly tab rebuilds its own buckets
-  AR_AXIS = null; AR_RETAIL = null;  // and Ad -> Retail its week axis
+  AR_AXIS = null; AR_RETAIL = null; AR_FAM = null;   // and Ad -> Retail its axis and crosswalk
   WEEKS_IN_YEAR = null;
   IDX = {byWeek:{}, cell:{}, pairs:{}, skus:{}, firstWeek:{}};
   DATA.rows.forEach(function(r){
@@ -1419,7 +1419,7 @@ function applyCogs(map){
       if(hit.family) DATA.skuFamily[sku] = hit.family;   /* the Ad -> Retail crosswalk */
     }
   });
-  AR_RETAIL = null;
+  AR_RETAIL = null; AR_FAM = null;
   refreshUnmapped();
 }
 function refreshUnmapped(){
@@ -2562,6 +2562,30 @@ var arFamily = null, arMetric = "pspw", arLag = 1, arScope = "us", arHoliday = t
 function arIsHoliday(wk){ return wk >= AR_HOLIDAY[0] || wk <= AR_HOLIDAY[1]; }
 function arHasAds(){ return DATA.adWeekly && Object.keys(DATA.adWeekly).length > 0; }
 
+/* SKU -> product family, resolved from whatever the data actually carries:
+   the stored crosswalk first, then the family COGS puts on each gross-profit
+   row, then the title itself. Depending on a single stored key is what left
+   this tab blank on a service whose disk predated it. */
+var AR_FAM = null;
+function arSkuFamily(){
+  if(AR_FAM) return AR_FAM;
+  AR_FAM = {};
+  var stored = DATA.skuFamily || {}, gp = DATA.gp || {}, alias = DATA.gpAlias || {};
+  Object.keys(DATA.skuTitle || {}).forEach(function(sku){
+    var f = stored[sku];
+    if(!f){
+      var g = gp[sku] || (alias[sku] ? gp[alias[sku]] : null);
+      if(g && g.family) f = g.family;
+    }
+    if(!f){
+      var low = String(DATA.skuTitle[sku] || "").replace(/_+/g, " ").toLowerCase();
+      for(var i = 0; i < AR_NAMES.length; i++) if(low.indexOf(AR_NAMES[i][0]) >= 0){ f = AR_NAMES[i][1]; break; }
+    }
+    if(f) AR_FAM[sku] = f;
+  });
+  return AR_FAM;
+}
+
 /* ---- the week axis, oldest first, straight off the report ---- */
 var AR_AXIS = null;
 function arAxis(){
@@ -2583,7 +2607,7 @@ var AR_RETAIL = null;
 function arRetail(){
   if(AR_RETAIL) return AR_RETAIL;
   AR_RETAIL = {};
-  var fam = DATA.skuFamily || {};
+  var fam = arSkuFamily();
   DATA.rows.forEach(function(r){
     var f = fam[r[3]];
     if(!f) return;
@@ -2606,8 +2630,8 @@ function arSpend(fam, key){
   return arScope === "us" ? w[key][0] : w[key][0] + w[key][1];
 }
 function arFamilies(){
-  var out = [], ad = DATA.adWeekly || {}, ret = {};
-  Object.keys(DATA.skuFamily || {}).forEach(function(s){ ret[DATA.skuFamily[s]] = 1; });
+  var out = [], ad = DATA.adWeekly || {}, sf = arSkuFamily(), ret = {};
+  Object.keys(sf).forEach(function(s){ ret[sf[s]] = 1; });
   Object.keys(ad).forEach(function(f){ if(ret[f]) out.push(f); });
   return out.sort();
 }
@@ -2991,7 +3015,31 @@ function renderAdRetail(){
     return;
   }
   var fams = arFamilies();
-  if(!fams.length) return;
+  if(!fams.length){
+    /* Something lines up wrong. Say which, rather than rendering nothing —
+       a blank tab with no message is the worst possible answer. */
+    var sf = arSkuFamily(), adf = Object.keys(DATA.adWeekly || {});
+    var retf = {}; Object.keys(sf).forEach(function(s){ retf[sf[s]] = 1; });
+    var why;
+    if(!Object.keys(sf).length){
+      why = "No SKU is mapped to a product family yet. Drop a <b>VSG COGS</b> workbook on section 06 \u2014 " +
+            "the crosswalk comes off its Product Family column.";
+    } else if(!adf.length){
+      why = "Ad spend is loaded but carries no family. Re-drop the Meta export on section 06.";
+    } else {
+      why = "Ad spend covers " + adf.slice(0, 6).join(", ") + (adf.length > 6 ? " and others" : "") +
+            ", and retail covers " + Object.keys(retf).slice(0, 6).join(", ") +
+            ", but no family appears in both. The campaign prefixes and the COGS Product Family " +
+            "column have to agree on a name.";
+    }
+    mount("arBar").innerHTML = "";
+    mount("arVerdict").innerHTML = '<div class="ar-verdict flat">' + why + '</div>';
+    ["arChart","arLegend","arR","arTable","arPlacebo","arPlaceboNote"].forEach(function(m){
+      var h = mount(m); if(h) h.innerHTML = "";
+    });
+    arRenderCoverage();
+    return;
+  }
   if(!arFamily || fams.indexOf(arFamily) < 0){
     /* open on whichever family has the most spend behind it */
     arFamily = fams.slice().sort(function(a, b){
