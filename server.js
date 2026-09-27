@@ -112,8 +112,9 @@ async function checkDisk() {
    repo's data.json would otherwise never reach a disk that already exists. So
    on boot, fill in only what the live copy is missing — anything already there
    wins, because that's what someone edited on the page. */
-const CONFIG_KEYS = ["briefFlagship", "briefExclude", "newTitleWeeks", "gpAlias", "monthNotes"];
-const MERGE_KEYS = ["adSpend", "ecomUnits"];
+const CONFIG_KEYS = ["briefFlagship", "briefExclude", "newTitleWeeks", "gpAlias",
+                     "monthNotes", "adMeta"];
+const MERGE_KEYS = ["adSpend", "ecomUnits", "skuFamily", "adWeekly"];
 
 async function backfill(live) {
   const seed = await readSeed();
@@ -128,7 +129,17 @@ async function backfill(live) {
     live[k] = live[k] || {};
     let n = 0;
     for (const m of Object.keys(seed[k])) {
-      if (live[k][m] === undefined) { live[k][m] = seed[k][m]; n++; }
+      const sv = seed[k][m];
+      // adWeekly is a map of maps — fill week by week, so a week already on the
+      // disk (someone dropped an export) is never replaced by the seed
+      if (sv && typeof sv === "object" && !Array.isArray(sv)) {
+        live[k][m] = live[k][m] || {};
+        for (const w of Object.keys(sv)) {
+          if (live[k][m][w] === undefined) { live[k][m][w] = sv[w]; n++; }
+        }
+      } else if (live[k][m] === undefined) {
+        live[k][m] = sv; n++;
+      }
     }
     if (n) added.push(`${k} (+${n})`);
   }
