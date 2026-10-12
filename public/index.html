@@ -395,7 +395,7 @@ details.ed[open] summary::before{transform:rotate(90deg)}
     <div class="sec-head">
       <span class="sec-num">03</span>
       <h2>Year-Over-Year Sales Comparison &mdash; Total Sales</h2>
-      <p>Actual dollars by month, every retailer and title.</p>
+      <p>Actual dollars by reporting week, every retailer and title.</p>
     </div>
     <div class="panel">
       <div class="bar" data-mount="monthBar"></div>
@@ -1086,19 +1086,26 @@ function lineChart(hostEl, cfg){
   attachTip(hostEl, f, xs, cfg.tip, false);
 }
 
-/* ============ section 03: monthly actuals, year over year ============ */
+/* ============ section 03: weekly actuals, year over year ============ */
 
 var monthScope = "ALL";
+var monthGrain = "week";        /* week by default; month is still a click away */
 
-/* Buckets are built from this year's week->month mapping, and last year is read
-   over the SAME week numbers — so the current part-month compares like for like. */
+/* Buckets are built from this year's weeks, and last year is read over the SAME
+   week numbers — so a part-period compares like for like either way. */
 function monthBuckets(){
   var yr = DATA.maxYear, wk = DATA.maxWeek, buckets = [];
+  if(monthGrain === "week"){
+    for(var w = 1; w <= wk; w++){
+      if(weekDate(yr, w) || weekRows(yr, w).length) buckets.push({wk:w, weeks:[w]});
+    }
+    return buckets;
+  }
   for(var m = 0; m < 12; m++) buckets.push({m:m, weeks:[]});
-  for(var w = 1; w <= wk; w++){
-    var iso = weekDate(yr, w);
+  for(var w2 = 1; w2 <= wk; w2++){
+    var iso = weekDate(yr, w2);
     if(!iso) continue;
-    buckets[+iso.split("-")[1] - 1].weeks.push(w);
+    buckets[+iso.split("-")[1] - 1].weeks.push(w2);
   }
   return buckets.filter(function(b){ return b.weeks.length; });
 }
@@ -1108,6 +1115,11 @@ function monthTotal(yr, weeks, scope){
     weekRows(yr, w).forEach(function(r){ if(scope === "ALL" || r[0] === scope) t += r[4]; });
   });
   return t;
+}
+function bucketLabel(b){
+  if(monthGrain !== "week") return MONTHS[b.m];
+  var iso = weekDate(DATA.maxYear, b.wk);
+  return iso ? prettyDate(iso).replace(/,\s*\d{4}$/, "") : "W" + b.wk;
 }
 
 function renderMonth(){
@@ -1122,20 +1134,29 @@ function renderMonth(){
     sel.value = monthScope;
     sel.addEventListener("change", function(){ monthScope = sel.value; renderMonth(); });
     lab.appendChild(sel); bar.appendChild(lab);
+
+    var lab2 = el("label","fld"); lab2.appendChild(el("span",null,"By"));
+    var sel2 = el("select");
+    [["week","Week"],["month","Month"]].forEach(function(o){
+      var op = el("option", null, o[1]); op.value = o[0]; sel2.appendChild(op);
+    });
+    sel2.value = monthGrain;
+    sel2.addEventListener("change", function(){ monthGrain = sel2.value; renderMonth(); });
+    lab2.appendChild(sel2); bar.appendChild(lab2);
   }
 
   var buckets = monthBuckets();
-  var xs = buckets.map(function(b){ return b.m; });
+  var xs = buckets.map(function(b, i){ return i; });
   var tyY = buckets.map(function(b){ return monthTotal(yr, b.weeks, monthScope); });
   var lyY = buckets.map(function(b){ return monthTotal(ly, b.weeks, monthScope); });
   var c1 = css("--s1"), c2 = css("--s2");
   var lastB = buckets[buckets.length-1];
-  var partial = lastB && lastB.weeks[lastB.weeks.length-1] === wk &&
-                weekDate(yr, wk).slice(-2) < "26";
+  var partial = monthGrain === "month" && lastB &&
+                lastB.weeks[lastB.weeks.length-1] === wk && weekDate(yr, wk).slice(-2) < "26";
 
   lineChart(mount("monthChart"), {
-    x:xs, fmtX:function(m){ return MONTHS[m]; }, fmtY:compact,
-    aria:"Monthly sales, " + yr + " versus " + ly,
+    x:xs, fmtX:function(i){ return bucketLabel(buckets[i]); }, fmtY:compact,
+    aria:(monthGrain === "week" ? "Weekly" : "Monthly") + " sales, " + yr + " versus " + ly,
     series:[{name:String(ly), color:c2, y:lyY, dash:true}, {name:String(yr), color:c1, y:tyY}],
     subLabel:function(i){
       var a = tyY[i], p = lyY[i];
@@ -1145,7 +1166,10 @@ function renderMonth(){
     },
     tip:function(i){
       var b = buckets[i], a = tyY[i], p = lyY[i];
-      var h = '<div class="tt">'+MONTHS[b.m]+' &middot; weeks '+b.weeks[0]+'–'+b.weeks[b.weeks.length-1]+'</div>';
+      var head = monthGrain === "week"
+        ? "Week " + b.wk + (weekDate(yr, b.wk) ? ' &middot; ending ' + prettyDate(weekDate(yr, b.wk)) : "")
+        : MONTHS[b.m] + ' &middot; weeks ' + b.weeks[0] + '–' + b.weeks[b.weeks.length-1];
+      var h = '<div class="tt">' + head + '</div>';
       h += '<div class="r"><span><span class="d" style="background:'+c1+'"></span>'+yr+'</span><span>'+money(a)+'</span></div>';
       h += '<div class="r"><span><span class="d" style="background:'+c2+'"></span>'+ly+'</span><span>'+money(p)+'</span></div>';
       if(a > 0 && p > 0) h += '<div class="r" style="margin-top:5px"><span>Comp</span><span style="color:'+(a>=p?"#7fd47f":"#f0918f")+'">'+signed(a/p-1,1)+'</span></div>';
@@ -1156,15 +1180,22 @@ function renderMonth(){
   mount("monthLegend").innerHTML =
     '<span class="k"><span class="sw" style="background:'+c1+'; border-color:'+c1+'"></span>'+yr+'</span>' +
     '<span class="k"><span class="sw" style="background:'+c2+'; border-color:'+c2+'"></span>'+ly+' (dashed)</span>' +
-    '<span class="k" style="color:var(--muted)">Percentages under each month are '+yr+' vs '+ly+'</span>';
+    '<span class="k" style="color:var(--muted)">Percentages under each labelled ' +
+      (monthGrain === "week" ? "week" : "month") + ' are '+yr+' vs '+ly+'</span>';
 
   var ytd = tyY.reduce(function(a,b){ return a+b; }, 0);
   var ytdLy = lyY.reduce(function(a,b){ return a+b; }, 0);
   var note = "Through week " + wk + ", " + (monthScope==="ALL" ? "all retailers have" : esc(monthScope)+" has") +
     " delivered <b>" + money(ytd) + "</b> against <b>" + money(ytdLy) + "</b> over the same weeks in " + ly +
     " — <b>" + (ytdLy>0 ? signed(ytd/ytdLy-1,1) : "no base") + "</b>.";
-  if(partial) note += " " + MONTHS[lastB.m] + " covers weeks " + lastB.weeks[0] + "–" + lastB.weeks[lastB.weeks.length-1] +
-    " so far; " + ly + " is read over those same weeks.";
+  if(monthGrain === "week"){
+    var iso = weekDate(yr, wk);
+    note += " Each point is one reporting week" + (iso ? ", the last ending " + prettyDate(iso) : "") +
+      "; " + ly + " is read over the same week numbers, never the same dates.";
+  } else if(partial){
+    note += " " + MONTHS[lastB.m] + " covers weeks " + lastB.weeks[0] + "–" + lastB.weeks[lastB.weeks.length-1] +
+      " so far; " + ly + " is read over those same weeks.";
+  }
   mount("monthNote").innerHTML = note;
 }
 
