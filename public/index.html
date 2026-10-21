@@ -175,6 +175,7 @@ details.ed[open] summary::before{transform:rotate(90deg)}
 .status.ok{background:var(--good-fill); border-left-color:var(--good)}
 .status.err{background:var(--crit-fill); border-left-color:var(--crit)}
 .status.info{background:var(--aqua-wash); border-left-color:var(--aqua-deep)}
+.warn-note{display:inline-block; margin-top:4px; color:#8a6200; font-weight:700}
 
 .footnote{margin-top:18px; font-size:12.5px; color:var(--muted); line-height:1.75; max-width:96ch}
 .footnote code{background:var(--surface-3); padding:1px 6px; font-weight:700; font-size:11.5px}
@@ -439,17 +440,20 @@ details.ed[open] summary::before{transform:rotate(90deg)}
     <div class="sec-head">
       <span class="sec-num">06</span>
       <h2>Load This Week's Report</h2>
-      <p>Drop the workbook to refresh every number above.</p>
+      <p>Drop the weekly workbook, a COGS workbook, or a Meta ad spend export.</p>
     </div>
-    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Drop the weekly workbook here, or press Enter to browse">
-      <h3>Drop the weekly workbook here</h3>
-      <p>Accepts the <span class="kbd">Very Special Games&lt;date&gt;.xlsx</span> export &mdash; it reads the <span class="kbd">WeeklySales</span> tab and rebuilds all history.<br>
-      A <span class="kbd">VSG COGS</span> workbook is also accepted, to refresh gross profit per SKU.</p>
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Drop a weekly report, COGS workbook or Meta ad spend export here, or press Enter to browse">
+      <h3>Drop a file here</h3>
+      <p><b>Weekly report</b> &mdash; the <span class="kbd">Very Special Games&lt;date&gt;.xlsx</span> export. Reads the <span class="kbd">WeeklySales</span> tab and rebuilds all history.<br>
+      <b>COGS</b> &mdash; a <span class="kbd">VSG COGS</span> workbook, to refresh gross profit and the cost stack per SKU.<br>
+      <b>Meta ad spend</b> &mdash; a campaign export from Ads Manager as <span class="kbd">.csv</span>, with
+      <span class="kbd">Campaign name</span>, <span class="kbd">Day</span>, <span class="kbd">Amount spent (USD)</span> and
+      <span class="kbd">Country</span>. Re-exporting a period replaces those weeks rather than adding to them.</p>
       <div class="files">
         <button type="button" data-act="browse">Choose a file</button>
         <span data-mount="saveBtn"></span>
       </div>
-      <input type="file" id="fileInput" accept=".xlsx,.xlsm" multiple hidden>
+      <input type="file" id="fileInput" accept=".xlsx,.xlsm,.csv" multiple hidden>
       <div class="status" data-mount="status"></div>
     </div>
     <div class="updated" data-mount="updated" style="padding-top:14px"></div>
@@ -1066,6 +1070,31 @@ function lineChart(hostEl, cfg){
         '" text-anchor="middle" fill="'+sl.color+'">'+esc(sl.text)+'</text>');
     }
   });
+  /* An optional bar layer, drawn behind the lines on its own scale. Used by
+     section 04 to put ad spend under a title's sell-through; the two have
+     nothing like the same magnitude, so they can't share an axis. */
+  if(cfg.bars){
+    var bMax = 0;
+    cfg.bars.y.forEach(function(v){ if(v != null && v > bMax) bMax = v; });
+    if(bMax > 0){
+      var bTop = bMax * 1.12;
+      var slot = f.iw / Math.max(1, xs.length - 1);
+      var bw = Math.max(2, Math.min(slot * 0.66, 16));
+      cfg.bars.y.forEach(function(v, i){
+        if(v == null || v <= 0) return;
+        var hgt = f.ih * (v / bTop);
+        f.svg.push('<rect x="' + (f.X(i) - bw/2).toFixed(1) + '" y="' + (CH.t + f.ih - hgt).toFixed(1) +
+          '" width="' + bw.toFixed(1) + '" height="' + hgt.toFixed(1) +
+          '" fill="' + cfg.bars.color + '" opacity=".28"/>');
+      });
+      niceTicks(bTop, 3).forEach(function(t){
+        if(t > bTop) return;
+        var y = CH.t + f.ih - f.ih * (t / bTop);
+        f.svg.push('<text class="axis-lab" x="' + (CH.w - CH.r + 9) + '" y="' + (y + 4).toFixed(1) +
+          '" text-anchor="start" fill="' + (cfg.bars.axisColor || cfg.bars.color) + '">' + esc(compact(t)) + '</text>');
+      });
+    }
+  }
   series.forEach(function(s){
     var d = "", open = false, lastI = -1;
     s.y.forEach(function(v,i){
@@ -1201,7 +1230,22 @@ function renderMonth(){
 
 /* ============ section 04: weekly actuals by retailer and title ============ */
 
-var pairKey = null, showFullLy = false;
+var pairKey = null, showFullLy = false, pairAds = false;
+
+/* The product family behind a retailer+SKU pair, and that family's US Meta
+   spend for a week. Spend is only ever recorded at family level, so this is
+   national spend across every title in the family — it cannot be cut to one
+   title at one retailer, and the labelling has to say so. */
+function pairFamily(sku){ return arSkuFamily()[sku] || null; }
+function pairFamilySpend(fam, yr, wk){
+  var w = (DATA.adWeekly || {})[fam];
+  if(!w || !w[yr + "-" + wk]) return null;
+  return w[yr + "-" + wk][0];          /* US only — UK and Canada can't move US POS */
+}
+function pairFamilyHasSpend(fam){
+  return Boolean(fam && (DATA.adWeekly || {})[fam] &&
+                 Object.keys(DATA.adWeekly[fam]).length);
+}
 
 function pairOptions(){
   var yr = DATA.maxYear, ly = yr-1, out = [];
@@ -1245,6 +1289,18 @@ function renderPair(){
   lab2.appendChild(sel2); bar.appendChild(lab2);
 
   var p = IDX.pairs[pairKey], ret = p.retailer, sku = p.sku;
+  var fam = pairFamily(sku), famHasSpend = pairFamilyHasSpend(fam);
+
+  if(famHasSpend){
+    var lab3 = el("label","fld"); lab3.appendChild(el("span",null,"Meta spend"));
+    var sel3 = el("select");
+    [["off","Hide"],["on","Show (" + fam + ", US)"]].forEach(function(o){
+      var op = el("option", null, o[1]); op.value = o[0]; sel3.appendChild(op);
+    });
+    sel3.value = pairAds ? "on" : "off";
+    sel3.addEventListener("change", function(){ pairAds = sel3.value === "on"; renderPair(); });
+    lab3.appendChild(sel3); bar.appendChild(lab3);
+  }
   var lastX = showFullLy ? Math.max(weeksInYear(ly), wk) : wk;
   var tyY = [], lyY = [], x = [];
   for(var w = 1; w <= lastX; w++){
@@ -1254,10 +1310,22 @@ function renderPair(){
   }
   var hasLy = lyY.some(function(v){ return v > 0; });
   var c1 = css("--s1"), c2 = css("--s2");
+  var cAd = "#9c9488", cAdAxis = "#6b6459";   /* neutral on purpose — gold is already last year */
+  var showAds = pairAds && famHasSpend;
+  var adY = null, adTotal = 0;
+  if(showAds){
+    adY = x.map(function(w){
+      var v = w <= wk ? pairFamilySpend(fam, yr, w) : null;
+      if(v != null) adTotal += v;
+      return v;
+    });
+  }
 
   lineChart(mount("pairChart"), {
     x:x, fmtX:function(w){ return "W"+w; }, fmtY:compact,
-    aria:"Weekly sales for " + ret + " " + titleOf(sku) + ", " + yr + " versus " + ly,
+    aria:"Weekly sales for " + ret + " " + titleOf(sku) + ", " + yr + " versus " + ly +
+         (showAds ? ", with " + fam + " Meta spend behind it" : ""),
+    bars: showAds ? {y:adY, color:cAd, axisColor:cAdAxis} : null,
     series:[
       {name:String(ly), color:c2, y: hasLy ? lyY : lyY.map(function(){ return null; }), dash:true},
       {name:String(yr), color:c1, y:tyY}
@@ -1269,15 +1337,19 @@ function renderPair(){
       h += '<div class="r"><span><span class="d" style="background:'+c1+'"></span>'+yr+'</span><span>'+(a==null?"—":money(a))+'</span></div>';
       h += '<div class="r"><span><span class="d" style="background:'+c2+'"></span>'+ly+'</span><span>'+money(b)+'</span></div>';
       if(a != null && b > 0) h += '<div class="r" style="margin-top:5px"><span>Comp</span><span style="color:'+(a>=b?"#7fd47f":"#f0918f")+'">'+signed(a/b-1,1)+'</span></div>';
+      if(showAds && adY[i] != null) h += '<div class="r" style="margin-top:5px"><span><span class="d" style="background:'+cAd+'"></span>'+esc(fam)+' ads (US)</span><span>'+money(adY[i])+'</span></div>';
       return h;
     }
   });
 
-  mount("pairLegend").innerHTML = hasLy
+  var legend = hasLy
     ? ('<span class="k"><span class="sw" style="background:'+c1+'; border-color:'+c1+'"></span>'+yr+'</span>' +
        '<span class="k"><span class="sw" style="background:'+c2+'; border-color:'+c2+'"></span>'+ly+' (dashed)'+(showFullLy?" — full year":" — same weeks")+'</span>')
     : ('<span class="k"><span class="sw" style="background:'+c1+'; border-color:'+c1+'"></span>'+yr+'</span>' +
        '<span class="k" style="color:var(--muted)">No '+ly+' history — this line launched this year</span>');
+  if(showAds) legend += '<span class="k"><span class="sw" style="background:'+cAd+'; border-color:'+cAd+'; opacity:.5"></span>' +
+    '<span style="color:'+cAdAxis+'">' + esc(fam) + ' Meta spend, US (right axis)</span></span>';
+  mount("pairLegend").innerHTML = legend;
 
   var cur = cell(ret, sku, yr, wk).s, base = cell(ret, sku, ly, wk).s;
   var ytd = 0, ytdLy = 0;
@@ -1287,6 +1359,16 @@ function renderPair(){
                 : " — no matching week last year.";
   s += " Year to date <b>" + money(ytd) + "</b>";
   s += ytdLy > 0 ? " vs <b>" + money(ytdLy) + "</b> (<b>" + signed(ytd/ytdLy-1,1) + "</b>)." : ".";
+  if(showAds){
+    /* The bars are family-wide and national. Saying so here is the whole point:
+       without it the chart reads as "we spent this on this title at this
+       retailer", which is not a number that exists. */
+    s += " <b>" + money(adTotal) + "</b> of US Meta spend sits behind the " + esc(fam) +
+      " family year to date \u2014 that is every title in the family across every retailer and " +
+      "e-commerce, not " + esc(titleOf(sku)) + " at " + esc(ret) +
+      ". Spend can't be split any finer than the family. The <b>Ad \u2192 Retail</b> tab is where " +
+      "the two are actually tested against each other.";
+  }
   mount("pairNote").innerHTML = s;
 }
 
@@ -1478,9 +1560,18 @@ function handleFiles(list){
           var ad = parseAdCsv(String(fr.result));
           if(ad){
             applyAdCsv(ad);
-            done.push(f.name + " \u2192 " + money(ad.total) + " of ad spend across " +
+            var msg = esc(f.name) + " \u2192 " + money(ad.total) + " of ad spend across " +
               ad.weeks.length + " week" + (ad.weeks.length > 1 ? "s" : "") +
-              (ad.unattributed > 0 ? " (" + money(ad.unattributed) + " in campaigns that span families)" : ""));
+              (ad.unattributed > 0 ? " (" + money(ad.unattributed) + " in campaigns that span families)" : "");
+            if(ad.kept && ad.kept.length) msg += "<br><span class=\"warn-note\">Kept what we already held for " +
+              ad.kept.map(function(k){ return k.week.replace("-", " W") + " \u2014 the file had " + k.days + " of its 7 days"; }).join("; ") +
+              ". A part-week would have undercounted it.</span>";
+            if(ad.partial && ad.partial.length) msg += "<br><span class=\"warn-note\">" +
+              ad.partial.map(function(k){ return k.week.replace("-", " W") + " (" + k.days + "/7 days)"; }).join(", ") +
+              " came in short with nothing already stored, so " + (ad.partial.length > 1 ? "those weeks are" : "that week is") +
+              " incomplete. Re-upload a full Sunday\u2013Saturday range to finish " +
+              (ad.partial.length > 1 ? "them" : "it") + ".</span>";
+            done.push(msg);
           } else {
             failed.push(f.name + " \u2014 not a Meta campaign export (needs Campaign name, Day and Amount spent columns)");
           }
@@ -1490,11 +1581,11 @@ function handleFiles(list){
         var weekly = parseWeekly(wb);
         if(weekly){
           applyWeekly(weekly);
-          done.push(f.name + " → " + weekly.rows.length.toLocaleString("en-US") +
+          done.push(esc(f.name) + " → " + weekly.rows.length.toLocaleString("en-US") +
             " rows through " + weekly.maxYear + " W" + weekly.maxWeek);
         } else {
           var cogs = parseCogs(wb);
-          if(cogs){ applyCogs(cogs); done.push(f.name + " → gross profit refreshed for " + Object.keys(cogs).length + " SKUs"); }
+          if(cogs){ applyCogs(cogs); done.push(esc(f.name) + " → gross profit refreshed for " + Object.keys(cogs).length + " SKUs"); }
           else failed.push(f.name + " — no WeeklySales or COGS-DETAILED tab found");
         }
       } catch(e){ failed.push(f.name + " — " + e.message); }
@@ -1511,7 +1602,7 @@ function finish(done, failed){
   }
   reindex(); renderAll(); markDirty();
   setStatus(failed.length ? "info" : "ok",
-    "<b>Read.</b><br>" + done.map(esc).join("<br>") +
+    "<b>Read.</b><br>" + done.join("<br>") +
     (failed.length ? "<br><br><b>Skipped:</b><br>" + failed.map(esc).join("<br>") : "") +
     "<br><br>This is a preview on your screen only. Check the numbers above, then " +
     (CAN_PUBLISH ? "<b>Publish to the team</b> to make it the shared view."
@@ -3027,6 +3118,10 @@ function arRenderCoverage(){
     esc(m.firstWeek.replace("-", " W")) + " to " + esc(m.lastWeek.replace("-", " W"))];
   if(gaps.length) bits.push("<b>" + gaps.length + " weeks have no export</b> (" + esc(gaps[0]) + "–" +
     esc(gaps[gaps.length-1]) + "). They are left out of every correlation rather than counted as zero spend");
+  var pw = m.partialWeeks || [];
+  if(pw.length) bits.push("<b>" + pw.length + " week" + (pw.length > 1 ? "s hold" : " holds") +
+    " only part of its spend</b> (" + pw.map(function(w){ return esc(w.replace("-", " W")); }).join(", ") +
+    ") \u2014 the export that supplied " + (pw.length > 1 ? "them" : "it") + " started or stopped mid-week");
   if(m.unattributed) bits.push(money(m.unattributed) + " of spend sits in campaigns that span families " +
     "(MULTI, remarketing) and is attributed to none of them");
   if(m.note) bits.push(esc(String(m.note).replace(/\.\s*$/, "")));
@@ -3161,6 +3256,7 @@ function parseAdCsv(text){
   if(cCamp < 0 || cDay < 0 || cAmt < 0) return null;
 
   var sats = arSaturdays(), out = {}, weeks = {}, unattributed = 0, skipped = 0, total = 0;
+  var cover = {};        /* week -> the distinct days this file supplies for it */
   for(var i = 1; i < rows.length; i++){
     var r = rows[i];
     if(!r || r.length < head.length - 2) continue;
@@ -3170,6 +3266,7 @@ function parseAdCsv(text){
     total += amt;
     var wk = arWeekOfDay(day, sats);
     if(!wk){ skipped += amt; continue; }
+    (cover[wk] || (cover[wk] = {}))[day] = 1;
     var fam = arFamilyOf(camp);
     if(!fam){ unattributed += amt; continue; }
     var us = cCtry >= 0 ? String(r[cCtry] || "").trim() === "US" : true;
@@ -3179,26 +3276,48 @@ function parseAdCsv(text){
     weeks[wk] = 1;
   }
   if(!Object.keys(weeks).length) return null;
-  return {spend:out, weeks:Object.keys(weeks), unattributed:unattributed, skipped:skipped, total:total};
+  var days = {};
+  Object.keys(cover).forEach(function(w){ days[w] = Object.keys(cover[w]).length; });
+  return {spend:out, weeks:Object.keys(weeks), days:days,
+          unattributed:unattributed, skipped:skipped, total:total};
 }
 
 /* Merge an export in. A week present in the new file replaces that week
    outright — re-exporting a month should correct it, not double it. */
+/* A reporting week runs Sunday to Saturday. An export whose date range stops
+   mid-week holds only part of that week — a January file starts on the 1st and
+   so carries three days of the week ending Jan 3, not seven. Writing that in
+   would replace a correct $64,049 with $26,370. So a week is only overwritten
+   when the file actually supplies all seven of its days; a short week is kept
+   if we already hold it, and flagged if we don't. */
 function applyAdCsv(parsed){
   DATA.adWeekly = DATA.adWeekly || {};
-  var touched = {};
-  parsed.weeks.forEach(function(w){ touched[w] = 1; });
+  var have = {};
+  Object.keys(DATA.adWeekly).forEach(function(fam){
+    Object.keys(DATA.adWeekly[fam]).forEach(function(w){ have[w] = 1; });
+  });
+
+  var accept = {}, kept = [], partial = [];
+  parsed.weeks.forEach(function(w){
+    var n = (parsed.days || {})[w] || 0;
+    if(n >= 7){ accept[w] = 1; return; }
+    if(have[w]) kept.push({week:w, days:n});          // we already have it in full
+    else { accept[w] = 1; partial.push({week:w, days:n}); }
+  });
+
   Object.keys(DATA.adWeekly).forEach(function(fam){
     Object.keys(DATA.adWeekly[fam]).forEach(function(w){
-      if(touched[w]) delete DATA.adWeekly[fam][w];
+      if(accept[w]) delete DATA.adWeekly[fam][w];
     });
   });
   Object.keys(parsed.spend).forEach(function(fam){
     var bag = DATA.adWeekly[fam] || (DATA.adWeekly[fam] = {});
     Object.keys(parsed.spend[fam]).forEach(function(w){
+      if(!accept[w]) return;
       bag[w] = [Math.round(parsed.spend[fam][w][0]*100)/100, Math.round(parsed.spend[fam][w][1]*100)/100];
     });
   });
+  parsed.kept = kept; parsed.partial = partial;
   Object.keys(DATA.adWeekly).forEach(function(f){
     if(!Object.keys(DATA.adWeekly[f]).length) delete DATA.adWeekly[f];
   });
@@ -3215,8 +3334,10 @@ function applyAdCsv(parsed){
   for(var i = lo; i >= 0 && i <= hi; i++) if(!all[axis[i]]) gaps.push(axis[i]);
 
   var prev = DATA.adMeta || {};
+  var wasPartial = ((DATA.adMeta || {}).partialWeeks || []).filter(function(w){ return !accept[w]; });
+  partial.forEach(function(p){ if(wasPartial.indexOf(p.week) < 0) wasPartial.push(p.week); });
   DATA.adMeta = {source:"Meta Ads (campaign export)", firstWeek:keys[0], lastWeek:keys[keys.length-1],
-    weeks:keys.length, gaps:gaps,
+    weeks:keys.length, gaps:gaps, partialWeeks:wasPartial,
     unattributed:Math.round((prev.unattributed || 0) + parsed.unattributed),
     note:prev.note || "", updatedAt:new Date().toISOString()};
   AR_RETAIL = null;
